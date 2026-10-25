@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NZ Regional Suitability Explorer</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #map { height: 100%; width: 100%; }
+
+    .panel {
+      position: absolute; left: 10px; z-index: 1000; width: 230px;
+      background: white; border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+      font: 13px sans-serif; box-sizing: border-box;
+    }
+    .panel-title { font-weight: 600; margin-bottom: 8px; color: #333; }
+
+    #weightPanel { top: 80px; padding: 14px 18px; text-align: center; font-size: 14px; }
+    #weightPanel .panel-title { margin-bottom: 2px; }
+    .arc-box { position: relative; width: 200px; height: 120px; margin: 0 auto; }
+    #arc { cursor: pointer; touch-action: none; }
+    #centerLabel {
+      position: absolute; left: 0; right: 0; top: 66px; pointer-events: none;
+      font-size: 20px; font-weight: 700; color: #1a9850;
+    }
+    .arc-ends {
+      display: flex; justify-content: space-between;
+      font-size: 12px; color: #888; padding: 0 6px; margin-top: 2px;
+    }
+    #label { font-size: 13px; color: #555; margin-top: 6px; }
+
+    #rankingPanel { top: 300px; padding: 12px 14px; }
+    .rank-row { margin-bottom: 7px; }
+    .rank-head { display: flex; justify-content: space-between; font-size: 12px; }
+    .rank-score { color: #888; }
+    .rank-track { height: 6px; border-radius: 3px; background: #eee; margin-top: 2px; }
+    .rank-bar { height: 6px; border-radius: 3px; }
+
+    .legend {
+      background: white; padding: 8px; border-radius: 6px;
+      font: 13px sans-serif; line-height: 1.6;
+    }
+    .legend-swatch {
+      display: inline-block; width: 12px; height: 12px;
+      margin-right: 6px; vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div id="weightPanel" class="panel">
+    <div class="panel-title">Preference</div>
+    <div class="arc-box">
+      <svg id="arc" width="200" height="120"></svg>
+      <div id="centerLabel">50 / 50</div>
+    </div>
+    <div class="arc-ends"><span>Rent</span><span>Jobs</span></div>
+    <div id="label">Rent 50% · Jobs 50%</div>
+  </div>
+
+  <div id="rankingPanel" class="panel">
+    <div class="panel-title">Ranking</div>
+    <div id="rankList"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    let wRent = 0.5;        
+    let geoLayer = null;    
+    let regionsData = [];   
+
+    function suitability(props) {
+      return wRent * props.rent_score + (1 - wRent) * props.jobs_score;
+    }
+
+    function getColor(s) {
+      return s > 0.55 ? '#1a9850' :
+             s > 0.45 ? '#91cf60' :
+             s > 0.35 ? '#d9ef8b' :
+             s > 0.25 ? '#fee08b' :
+             s > 0.15 ? '#fc8d59' :
+                        '#d73027';
+    }
+
+    function popupHtml(p) {
+      return `<b>${p.region}</b><br>
+        Rent: $${p.rent}/week<br>
+        Jobs: ${p.jobs.toLocaleString()}<br>
+        Suitability: ${suitability(p).toFixed(2)}`;
+    }
+
+    const map = L.map('map').setView([-41, 173], 5);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    fetch('regions.geojson')
+      .then(response => response.json())
+      .then(data => {
+        geoLayer = L.geoJSON(data, {
+          style: feature => ({
+            color: '#555',
+            weight: 1,
+            fillColor: getColor(suitability(feature.properties)),
+            fillOpacity: 0.75
+          }),
+          onEachFeature: (feature, layer) => {
+            layer.bindPopup(() => popupHtml(feature.properties));
+          }
+        }).addTo(map);
+
+        map.fitBounds(geoLayer.getBounds());
+
+        regionsData = data.features.map(f => f.properties);
+        updateRanking();
+      })
+      .catch(err => console.error('Failed to load GeoJSON:', err));
+
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function () {
+      const div = L.DomUtil.create('div', 'legend');
+      const samples = [0.6, 0.5, 0.4, 0.3, 0.2, 0.1];
+      const labels = ['> 0.55', '0.45 – 0.55', '0.35 – 0.45', '0.25 – 0.35', '0.15 – 0.25', '< 0.15'];
+      let html = '<b>Suitability</b><br>';
+      samples.forEach((s, i) => {
+        html += `<span class="legend-swatch" style="background:${getColor(s)}"></span>${labels[i]}<br>`;
+      });
+      div.innerHTML = html;
+      return div;
+    };
+    legend.addTo(map);
+
+    const svg = document.getElementById('arc');
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const cx = 100, cy = 105, r = 80; 
+
+    function pointOnArc(angle) {
+      return {
+        x: cx + r * Math.cos(angle),
+        y: cy - r * Math.sin(angle)
+      };
+    }
+
+    const left = pointOnArc(Math.PI);
+    const right = pointOnArc(0);
+    const track = document.createElementNS(SVG_NS, 'path');
+    track.setAttribute('d', `M ${left.x} ${left.y} A ${r} ${r} 0 0 1 ${right.x} ${right.y}`);
+    track.setAttribute('fill', 'none');
+    track.setAttribute('stroke', '#ddd');
+    track.setAttribute('stroke-width', '8');
+    track.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(track);
+
+    const handle = document.createElementNS(SVG_NS, 'circle');
+    handle.setAttribute('r', '9');
+    handle.setAttribute('fill', 'white');
+    handle.setAttribute('stroke', '#1a9850');
+    handle.setAttribute('stroke-width', '3');
+    svg.appendChild(handle);
+
+    function updateHandle() {
+      const p = pointOnArc(Math.PI * wRent);
+      handle.setAttribute('cx', p.x);
+      handle.setAttribute('cy', p.y);
+    }
+    updateHandle();
+
+    function setFromPointer(evt) {
+      const rect = svg.getBoundingClientRect();
+      const mx = evt.clientX - rect.left;
+      const my = evt.clientY - rect.top;
+      let angle = Math.atan2(cy - my, mx - cx);
+      if (angle < 0) angle = (mx < cx) ? Math.PI : 0;
+      angle = Math.max(0, Math.min(Math.PI, angle));
+      wRent = angle / Math.PI;
+      updateHandle();
+      refresh();
+    }
+
+    let dragging = false;
+    svg.addEventListener('pointerdown', e => { dragging = true; setFromPointer(e); });
+    window.addEventListener('pointermove', e => { if (dragging) setFromPointer(e); });
+    window.addEventListener('pointerup', () => { dragging = false; });
+
+    function refresh() {
+      const rentPct = Math.round(wRent * 100);
+      document.getElementById('label').textContent = `Rent ${rentPct}% · Jobs ${100 - rentPct}%`;
+      document.getElementById('centerLabel').textContent = `${rentPct} / ${100 - rentPct}`;
+      if (!geoLayer) return;
+      geoLayer.setStyle(feature => ({
+        color: '#555', weight: 1,
+        fillColor: getColor(suitability(feature.properties)),
+        fillOpacity: 0.75
+      }));
+      geoLayer.eachLayer(l => { if (l.isPopupOpen()) l.getPopup().update(); });
+      updateRanking();
+    }
+
+    function updateRanking() {
+      if (regionsData.length === 0) return;
+
+      const ranked = regionsData
+        .map(p => ({ name: p.region.replace(' Region', ''), score: suitability(p) }))
+        .sort((a, b) => b.score - a.score);
+
+      const maxScore = ranked[0].score || 1;
+      let html = '';
+      ranked.forEach((item, i) => {
+        const barWidth = (item.score / maxScore) * 100;
+        html += `
+          <div class="rank-row">
+            <div class="rank-head">
+              <span>${i + 1}. ${item.name}</span>
+              <span class="rank-score">${item.score.toFixed(2)}</span>
+            </div>
+            <div class="rank-track">
+              <div class="rank-bar" style="width:${barWidth}%; background:${getColor(item.score)}"></div>
+            </div>
+          </div>`;
+      });
+      document.getElementById('rankList').innerHTML = html;
+    }
+  </script>
+
+</body>
+</html>
